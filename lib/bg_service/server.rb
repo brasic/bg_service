@@ -16,15 +16,15 @@ module BgService
       def extended_message(server)
         <<~MSG.chomp
           cmd: #{server.cmd.inspect}
-          exit status: #{server.exit_status&.exitstatus}
-          server output:#{server.server_output}
+          exit status: #{server.exit_status || "(unknown)" }
+          server output:\n#{server.logs}
         MSG
       end
     end
 
     class CrashedOnStartup < DebugError; end
     class UnexpectedStatus < DebugError; end
-    class TimeoutElapsed < DebugError; end
+    class TimedOut < DebugError; end
     class InvalidState < DebugError; end
 
     DEFAULT_TIMEOUT = 10
@@ -43,12 +43,12 @@ module BgService
     end
 
     def start
+      if @start_attempted
+        raise InvalidState.new("cannot start a server that has already been stopped", self)
+      end
+      @start_attempted = now
       if listening?
         raise AlreadyRunning, "port #{@port} is already in use, refusing to start #{@cmd.inspect}"
-      end
-
-      if frozen?
-        raise InvalidState.new("cannot start a server that has already been stopped", self)
       end
 
       @pid = spawn(@env, *@cmd, out: @out, err: @err)
@@ -70,13 +70,15 @@ module BgService
           raise UnexpectedStatus.new(status, self)
         end
       end
-      raise TimeoutElapsed.new("not listening after #{@boot_timeout} seconds", self)
+      stop
+      raise TimedOut.new("not listening after #{@boot_timeout} seconds", self)
     end
 
-    def server_output
+    def logs
+      return @final_out if @final_out
       out = prefix_log(@out, 'out') 
       err = prefix_log(@err, 'err')
-      "\n#{out}#{err.chomp}"
+      "#{out}#{err.chomp}"
     end
 
     def prefix_log(path, msg)
@@ -92,9 +94,16 @@ module BgService
     def stop
       if @pid
         Process.kill 'TERM', @pid
-        wait_status(nonblock: false).exitstatus
+        wait_status(nonblock: false)
+        cleanup
         freeze # prevent further use
+        nil
       end
+    end
+
+    def cleanup
+      @final_out = logs
+      FileUtils.remove_entry @tmpdir
     end
 
     def listening?
@@ -111,8 +120,7 @@ module BgService
     end
 
     def status
-      return :not_running if @pid.nil? || !running?
-
+      return :not_running if !running?
       listening? ? :listening : :starting
     end
 
