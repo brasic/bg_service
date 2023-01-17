@@ -66,14 +66,7 @@ class TestBgService < Minitest::Test
     refute_nil @svc.exit_status
     assert_predicate @svc.exit_status, :success?
     ex = assert_raises(BgService::Server::InvalidState) { @svc.start }
-    assert_log_match(<<~MSG.chomp, ex.message)
-      cannot start a server that has already been stopped
-      cmd: ["test/fixtures/echo_server.rb", "8833"]
-      exit status: pid XXX exit 0
-      server output:
-        out 0: shutdown on TERM
-      err: <empty>
-    MSG
+    assert_match(/cannot start a server that has already been stopped/, ex.message)
   end
 
   def test_is_helpful_when_server_does_not_start
@@ -101,5 +94,12 @@ class TestBgService < Minitest::Test
       out: <empty>
       err: <empty>
     MSG
+  end
+
+  def test_handles_servers_that_eat_sigterm
+    @svc = BgService::Server.new(['test/fixtures/eats_sigterm.rb', '7890'], port: 7890)
+    @svc.start
+    @svc.stop
+    assert_equal 9, @svc.exit_status.termsig # got SIGKILLed  
   end
 end

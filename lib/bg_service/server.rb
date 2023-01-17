@@ -92,12 +92,23 @@ module BgService
     end
 
     def stop
+      killer = Thread.start do
+        begin
+          sleep 1
+          Process.kill(:KILL, @pid)
+        end
+      end
       if @pid
         Process.kill 'TERM', @pid
         wait_status(nonblock: false)
         cleanup
         freeze # prevent further use
         nil
+      end
+    ensure
+      if killer
+        killer.kill
+        killer.join
       end
     end
 
