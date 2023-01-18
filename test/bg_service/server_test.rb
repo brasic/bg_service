@@ -101,10 +101,10 @@ class ServerTest < Minitest::Test
   end
 
   def test_handles_servers_that_dont_listen
-    @server = BgService::Server.new("sleep 10", port: 9876, boot_timeout: 0.1)
+    @server = BgService::Server.new("sleep 10", port: 9876, boot_timeout: 0.01)
     ex = assert_raises(BgService::TimedOut) { @server.start }
     assert_log_match(<<~MSG.chomp, ex.message)
-      not listening after 0.1 seconds
+      not listening after 0.01 seconds
       cmd: "sleep 10"
       exit status: pid XXX SIGTERM (signal 15)
       server output:
@@ -114,9 +114,35 @@ class ServerTest < Minitest::Test
   end
 
   def test_forcibly_kills_servers_that_ignore_sigterm
-    @server = BgService::Server.new(['test/fixtures/eats_sigterm.rb', '7890'], port: 7890)
+    @server = BgService::Server.new(['test/fixtures/eats_sigterm.rb', '7890'], port: 7890, term_timeout: 0.1)
     @server.start
     @server.stop
     assert_equal 9, @server.exit_status.termsig # got SIGKILLed  
+  end
+
+  def test_unexpected_statuses
+    @server.stub(:status, :weird_unknown_value) do
+      ex = assert_raises(BgService::UnexpectedStatus) { @server.start }
+      assert_equal(<<~MSG.chomp, ex.message)
+        invariant violated: status was :weird_unknown_value
+        cmd: [\"test/fixtures/echo_server.rb\", \"8833\"]
+        exit status: (unknown)
+        server output:
+        out: <empty>
+        err: <empty>
+      MSG
+    end
+  end
+
+  def test_handles_missing_logfiles
+    impl = -> path { raise Errno::ENOENT, "No such file or directory @ rb_sysopen - #{path}" }
+    File.stub(:readlines, impl) do
+      @server.start
+      @server.stop
+      assert_equal(<<~OUT.chomp, @server.logs)
+        out: <missing>
+        err: <missing>
+      OUT
+    end
   end
 end

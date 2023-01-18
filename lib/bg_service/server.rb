@@ -3,13 +3,19 @@
 require 'socket'
 
 module BgService
+  # A network server that listens for incoming connections to be run as a
+  # background process.
   class Server
-    DEFAULT_TIMEOUT = 10
-    SLEEP_INTERVAL = 0.02 # 20ms
+    # Wait this long for the server to start listening before giving up
+    DEFAULT_BOOT_TIMEOUT = 10
+    # After sending a TERM signal, wait this long for the process to exit
+    # before sending a KILL signal
+    DEFAULT_TERM_TIMEOUT = 1
+    SLEEP_INTERVAL = 0.005 # 5ms (while waiting for the server to start or stop)
 
     attr_reader :exit_status, :cmd
 
-    def initialize(cmd, port:, env: {}, boot_timeout: DEFAULT_TIMEOUT)
+    def initialize(cmd, port:, env: {}, boot_timeout: DEFAULT_BOOT_TIMEOUT, term_timeout: DEFAULT_TERM_TIMEOUT)
       @cmd = cmd
       @env = env
       @port = port
@@ -17,6 +23,7 @@ module BgService
       @out = File.join(@tmpdir, 'out')
       @err = File.join(@tmpdir, 'err')
       @boot_timeout = boot_timeout
+      @term_timeout = term_timeout
     end
 
     def start
@@ -39,10 +46,13 @@ module BgService
 
     def block_until_ready
       while (now - @started_at) < @boot_timeout
-        case s=status
-        when :listening then return
-        when :starting then sleep SLEEP_INTERVAL
-        when :not_running then raise CrashedOnStartup.new("process exited before listening on port #{@port}", self)
+        s=status
+        if s == :starting
+          sleep SLEEP_INTERVAL
+        elsif s == :listening
+          return
+        elsif s == :not_running
+          raise CrashedOnStartup.new("process exited before listening on port #{@port}", self)
         else
           raise UnexpectedStatus.new("invariant violated: status was #{s.inspect}", self)
         end
@@ -65,27 +75,27 @@ module BgService
         return "#{msg}: <empty>\n" if str.empty?
       end
     rescue Errno::ENOENT
-      "#{msg}: (no log file)"
+      return "#{msg}: <missing>\n"
     end
 
     def stop
-      killer = Thread.start do
-        begin
-          sleep 1
-          Process.kill(:KILL, @pid)
-        end
-      end
       if @pid
-        Process.kill 'TERM', @pid
-        wait_status(nonblock: false)
+        wait_for_exit
         cleanup
         freeze # prevent further use
-        nil
       end
-    ensure
-      if killer
-        killer.kill
-        killer.join
+    end
+
+    # Give the process @kill_timeout seconds to exit after sending a TERM
+    # signal and then forcibly terminate it with SIGKILL.
+    def wait_for_exit
+      Process.kill 'TERM', @pid
+      termed_at = now
+      loop do
+        break if wait_status
+        if (now - termed_at) > @term_timeout
+          Process.kill 'KILL', @pid
+        end
       end
     end
 
@@ -112,10 +122,9 @@ module BgService
       listening? ? :listening : :starting
     end
 
-    def wait_status(nonblock: true)
+    def wait_status
       @wait_status ||= begin
-        flags = nonblock ? Process::WNOHANG : 0
-        _, status = Process.wait2(@pid, flags)
+        _, status = Process.wait2(@pid, Process::WNOHANG)
         if status
           @pid = nil
           @exit_status = status
