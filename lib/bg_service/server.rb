@@ -4,29 +4,6 @@ require 'socket'
 
 module BgService
   class Server
-    class BaseError < RuntimeError; end
-    class AlreadyRunning < BaseError; end
-
-    # An error with debug data automatically included
-    class DebugError < BaseError
-      def initialize(msg, server)
-        super("#{msg}\n#{extended_message(server)}")
-      end
-
-      def extended_message(server)
-        <<~MSG.chomp
-          cmd: #{server.cmd.inspect}
-          exit status: #{server.exit_status || "(unknown)" }
-          server output:\n#{server.logs}
-        MSG
-      end
-    end
-
-    class CrashedOnStartup < DebugError; end
-    class UnexpectedStatus < DebugError; end
-    class TimedOut < DebugError; end
-    class InvalidState < DebugError; end
-
     DEFAULT_TIMEOUT = 10
     SLEEP_INTERVAL = 0.02 # 20ms
 
@@ -62,12 +39,12 @@ module BgService
 
     def block_until_ready
       while (now - @started_at) < @boot_timeout
-        case status
+        case s=status
         when :listening then return
         when :starting then sleep SLEEP_INTERVAL
         when :not_running then raise CrashedOnStartup.new("process exited before listening on port #{@port}", self)
         else
-          raise UnexpectedStatus.new(status, self)
+          raise UnexpectedStatus.new("invariant violated: status was #{s.inspect}", self)
         end
       end
       stop
