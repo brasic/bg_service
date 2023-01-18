@@ -27,3 +27,10 @@ jobs:
         bundler-cache: true
     - name: Run the default task
       run: bundle exec rake
+    - name: tar coverage
+      run: tar cJvf coverage.tar.xz coverage
+    - name: upload coverage
+      uses: actions/upload-artifact@v3
+      with:
+        name: coverage-${{ matrix.ruby }}
+        path: coverage.tar.xz
