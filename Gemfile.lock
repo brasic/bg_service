@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    bg_service (0.1.0)
+    bg_service (1.0.0)
 
 GEM
   remote: https://rubygems.org/
